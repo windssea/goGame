@@ -9,7 +9,9 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:browser": "node qa/browser-check.mjs && node qa/ai-and-settlement-check.mjs && node qa/proxy-check.mjs",
-    "test:offline": "node qa/offline-and-tactics-check.mjs"
+    "test:offline": "node qa/offline-and-tactics-check.mjs",
+    "test:learning": "node qa/learning-upgrade-check.mjs",
+    "benchmark:engine": "node qa/engine-benchmark.mjs"
   },
   "dependencies": {
     "@phosphor-icons/react": "2.1.10",

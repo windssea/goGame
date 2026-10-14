@@ -19,6 +19,7 @@ export type Progress = {
   >;
   exams: Record<string, number>;
   openings: string[];
+  challenges?: Record<string, { best: number; attempts: number; at: number }>;
 };
 export const emptyProgress = (): Progress => ({
   version: 1,
@@ -67,6 +68,23 @@ export async function clearRecords() {
     tx.objectStore("records").clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+export async function restoreRecords(
+  progress: Progress,
+  games: SavedGame[],
+  replace = false,
+) {
+  const database = await db();
+  return new Promise<void>((resolve, reject) => {
+    const tx = database.transaction("records", "readwrite");
+    const store = tx.objectStore("records");
+    if (replace) store.clear();
+    store.put(progress, "progress");
+    for (const game of games) store.put(compactGame(game), `game:${game.id}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 export const saveGames = (games: SavedGame[]) => setRecord("games", games);
@@ -125,6 +143,8 @@ export type Preferences = {
   sound: boolean;
   board2d: boolean;
   confirm: boolean;
+  scene: "bamboo" | "room" | "night";
+  boardMaterial: "kaya" | "walnut" | "slate";
 };
 export function loadPreferences(): Preferences {
   const defaults: Preferences = {
@@ -134,6 +154,8 @@ export function loadPreferences(): Preferences {
     sound: true,
     board2d: false,
     confirm: matchMedia("(pointer: coarse)").matches,
+    scene: "bamboo",
+    boardMaterial: "kaya",
   };
   try {
     return {

@@ -463,6 +463,7 @@ export function PlayView({
       <div className="workbench">
         <Board
           position={position}
+          coachNote={node.explanation}
           preferences={preferences}
           selected={selected}
           hint={hint || pending}

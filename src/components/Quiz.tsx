@@ -6,6 +6,7 @@ import {
   ArrowCounterClockwise,
 } from "@phosphor-icons/react";
 import type { Question } from "../content/courses";
+import { useCoachAssistance } from "./Coach";
 export function Quiz({
   questions,
   exam = false,
@@ -26,6 +27,9 @@ export function Quiz({
     [criticalPassed, setCriticalPassed] = useState(true);
   const question = questions[step],
     correct = selection === question.answer;
+  useCoachAssistance(() => {
+    if (!exam && !submitted) setHinted(true);
+  });
   const next = () => {
     const finalScore = score + (correct && !hinted ? 1 : 0),
       finalHints = hints + (hinted ? 1 : 0),

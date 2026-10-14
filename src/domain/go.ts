@@ -237,6 +237,19 @@ export function fromCoord(value: string, size = 19): Point {
 }
 export const actionId = (action: Action) =>
   action.type === "pass" ? "pass" : `p-${action.row}-${action.col}`;
+export function stoneMoveNumbers(position: Position): Record<number, number> {
+  const result: Record<number, number> = {};
+  let previous = position.history[0]?.split(":")[0] || "";
+  for (let move = 1; move < position.history.length; move++) {
+    const board = position.history[move].split(":")[0];
+    for (let i = 0; i < board.length; i++) {
+      if (board[i] === "0") delete result[i];
+      else if (previous[i] !== board[i]) result[i] = move;
+    }
+    previous = board;
+  }
+  return result;
+}
 export function legalActions(p: Position): Action[] {
   const actions: Action[] = [];
   p.board.forEach((value, i) => {
@@ -359,12 +372,15 @@ export function restoreGame(record: StoredGame): SavedGame {
       throw new Error("棋谱分支结构损坏");
     visiting.add(id);
     const node = record.nodes[id];
-    const history = node.parent
-      ? [
-          ...hydrate(node.parent).position.history,
-          fingerprint(node.position.board, node.position.toPlay),
-        ]
-      : node.position.history;
+    const history =
+      node.parent && node.action
+        ? [
+            ...hydrate(node.parent).position.history,
+            fingerprint(node.position.board, node.position.toPlay),
+          ]
+        : node.parent
+          ? hydrate(node.parent).position.history
+          : node.position.history;
     visiting.delete(id);
     return (restored[id] = {
       ...node,
@@ -375,18 +391,35 @@ export function restoreGame(record: StoredGame): SavedGame {
   return { ...record, nodes: restored };
 }
 const sgfEscape = (text: string) =>
-  text.replace(/\\/g, "\\\\").replace(/\]/g, "\\]").replace(/\r?\n/g, "\\n");
+  text.replace(/\\/g, "\\\\").replace(/\]/g, "\\]").replace(/\r\n?/g, "\n");
 export function toSGF(game: SavedGame) {
   const root = game.nodes[game.root],
     letters = "abcdefghijklmnopqrs";
+  const setup =
+    ([1, 2] as const)
+      .map((color) => {
+        const points = root.position.board.flatMap((c, i) =>
+          c === color
+            ? [
+                `[${letters[i % root.position.size]}${letters[Math.floor(i / root.position.size)]}]`,
+              ]
+            : [],
+        );
+        return points.length
+          ? `${color === 1 ? "AB" : "AW"}${points.join("")}`
+          : "";
+      })
+      .join("") + (root.position.toPlay === 2 ? "PL[W]" : "");
   const visit = (id: string): string => {
     const node = game.nodes[id];
     const move = node.action
       ? `;${other(node.position.toPlay) === 1 ? "B" : "W"}[${node.action.type === "pass" ? "" : letters[node.action.col] + letters[node.action.row]}]`
-      : "";
+      : id === game.root
+        ? ""
+        : ";";
     const comment =
       node.source || node.explanation
-        ? `C[${sgfEscape([node.source, node.explanation].filter(Boolean).join(" · "))}]`
+        ? `C[${sgfEscape([node.source?.startsWith("SGF") ? "" : node.source, node.explanation].filter(Boolean).join(" · "))}]`
         : "";
     const branches =
       node.children.length === 1
@@ -394,5 +427,5 @@ export function toSGF(game: SavedGame) {
         : node.children.map((child) => `(${visit(child)})`).join("");
     return move + comment + branches;
   };
-  return `(;GM[1]FF[4]CA[UTF-8]AP[GoStudio:0.1]SZ[${root.position.size}]KM[${root.position.komi}]RU[teaching-area-v1]GN[${sgfEscape(game.title)}]${game.result ? `RE[${sgfEscape(game.result)}]` : ""}${visit(game.root)})`;
+  return `(;GM[1]FF[4]CA[UTF-8]AP[GoStudio:0.2]SZ[${root.position.size}]KM[${root.position.komi}]RU[teaching-area-v1]GN[${sgfEscape(game.title)}]${setup}${game.result ? `RE[${sgfEscape(game.result)}]` : ""}${visit(game.root)})`;
 }

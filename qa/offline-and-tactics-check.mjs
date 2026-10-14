@@ -103,6 +103,31 @@ try {
     result: "passed",
   });
   await duplicate.close();
+  await page.goto(`${base}/#/study/nine-direction`, {
+    waitUntil: "networkidle",
+  });
+  await page.getByRole("button", { name: "棋谱最后一步" }).click();
+  await page.locator(".study-comment").waitFor();
+  await page.getByRole("button", { name: "打开全局围棋教练" }).click();
+  await page.getByLabel("向教练提问").fill("请解释这里的连接");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await page.locator(".coach-message.assistant").waitFor();
+  assert.ok(
+    (await page.locator(".coach-message.assistant").innerText()).includes(
+      "本地参考",
+    ),
+  );
+  await page.keyboard.press("Escape");
+  await page.goto(`${base}/#/challenge/tactics`, { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "开始这一轮" }).click();
+  await page.getByRole("button", { name: "看目标提示（转为练习）" }).click();
+  await page.getByLabel("快速切换场景").selectOption("night");
+  assert.ok(await page.locator(".board-shell.scene-night").count());
+  report.push({
+    check:
+      "new annotated studies, local coach, transformed challenge and appearance switching work offline",
+    result: "passed",
+  });
   await context.setOffline(false);
   await page.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
   await page

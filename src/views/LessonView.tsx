@@ -15,6 +15,7 @@ import type { Point } from "../domain/go";
 import { lessons, stages } from "../content/courses";
 import type { Lesson, Question } from "../content/courses";
 import type { Preferences } from "../storage";
+import { CoachButton } from "../components/Coach";
 
 export function LessonView({
   lesson,
@@ -151,6 +152,7 @@ export function LessonView({
   const nextLesson = lessons[lessons.findIndex((l) => l.id === lesson.id) + 1];
   return (
     <div className="lesson-view page-enter">
+      <CoachButton />
       <button className="back-link" onClick={back}>
         <ArrowLeft size={18} /> 返回学习路线
       </button>

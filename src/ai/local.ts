@@ -9,6 +9,8 @@ import {
   point,
 } from "../domain/go";
 import type { Action, Color, Position } from "../domain/go";
+import { evaluatePosition, isTrueEye } from "./evaluation";
+import { rollout, seededRandom } from "./rollout";
 export type Difficulty = "guided" | "beginner" | "challenge" | "advanced";
 export const difficultyLabels: Record<Difficulty, string> = {
   guided: "启蒙陪练",
@@ -28,22 +30,12 @@ const budgets: Record<
   { width: number; depth: number; randomness: number }
 > = {
   guided: { width: 8, depth: 1, randomness: 0.3 },
-  beginner: { width: 10, depth: 1, randomness: 0.15 },
-  challenge: { width: 14, depth: 2, randomness: 0.04 },
-  advanced: { width: 18, depth: 3, randomness: 0 },
+  beginner: { width: 10, depth: 2, randomness: 0.04 },
+  challenge: { width: 14, depth: 3, randomness: 0 },
+  advanced: { width: 18, depth: 4, randomness: 0 },
 };
 function estimate(p: Position, color: Color) {
-  let value = 0;
-  for (const g of groups(p.board, p.size)) {
-    const sign = g.color === color ? 1 : -1;
-    value +=
-      sign *
-      (g.stones.size * 3 +
-        Math.min(g.liberties.size, 6) * 0.2 -
-        (g.liberties.size === 1 ? g.stones.size * 5 : 0));
-  }
-  value += (p.captures[color - 1] - p.captures[other(color) - 1]) * 3;
-  return value;
+  return evaluatePosition(p, color);
 }
 function immediate(p: Position, action: Action): Candidate | null {
   const move = play(p, action);
@@ -85,7 +77,15 @@ function immediate(p: Position, action: Action): Candidate | null {
     const friendly = adjacent.filter((n) => p.board[n] === p.toPlay).length;
     // Friendly eye fills are legal, but rarely useful as a local heuristic.
     if (friendly === adjacent.length && !move.captured.length && !saved)
-      value -= 16;
+      value -= isTrueEye(p.board, i, p.size, p.toPlay) ? 45 : 16;
+    const connected = new Set<number>();
+    let connections = 0;
+    for (const n of adjacent) {
+      if (p.board[n] !== p.toPlay || connected.has(n)) continue;
+      groupAt(p.board, n, p.size).stones.forEach((s) => connected.add(s));
+      connections++;
+    }
+    if (connections > 1 && own.liberties.size > 2) value += 2.5;
     if (p.moveNumber < p.size * 2) {
       value +=
         edge === (p.size >= 13 ? 3 : 2)
@@ -107,7 +107,19 @@ function immediate(p: Position, action: Action): Candidate | null {
         p.size * 2,
       );
       value +=
-        nearest >= 3 && nearest <= p.size ? 0.7 : nearest === 1 ? -0.4 : 0;
+        nearest >= 3 && nearest <= p.size ? 1.8 : nearest === 1 ? -1.2 : 0;
+      // Corners are efficient to develop; avoid repeatedly crowding an occupied corner.
+      const line = p.size >= 13 ? 3 : p.size >= 9 ? 2 : 1;
+      const cornerDistance =
+        Math.min(action.row, p.size - 1 - action.row) +
+        Math.min(action.col, p.size - 1 - action.col);
+      if (
+        edge >= line - 1 &&
+        edge <= line &&
+        cornerDistance <= line * 2 + 1 &&
+        nearest >= 3
+      )
+        value += 3;
     }
     if (saved) {
       facts.push({ id: "saved", kind: "saved_from_atari", count: saved });
@@ -133,44 +145,123 @@ export function rankCandidates(
   difficulty: Difficulty = "beginner",
   rng: () => number = Math.random,
 ): Candidate[] {
+  if (p.passes >= 2) return [];
   const config = budgets[difficulty];
+  const baseline = estimate(p, p.toPlay);
   const candidates = legalActions(p)
     .map((action) => immediate(p, action)!)
+    .map((candidate) => {
+      const next = play(p, candidate.action);
+      if (next.ok)
+        candidate.value += (estimate(next.position, p.toPlay) - baseline) * 0.7;
+      return candidate;
+    })
     .sort((a, b) => b.value - a.value);
   if (config.depth > 1) {
     const deadline =
-      performance.now() + (difficulty === "advanced" ? 650 : 250);
-    for (const candidate of candidates.slice(0, config.width)) {
-      if (performance.now() > deadline) break;
-      const moved = play(p, candidate.action);
-      if (!moved.ok) continue;
-      const replies = legalActions(moved.position)
-        .map((a) => immediate(moved.position, a)!)
+      performance.now() +
+      (difficulty === "advanced"
+        ? 1400
+        : difficulty === "challenge"
+          ? 800
+          : 350);
+    const roots = candidates.slice(0, Math.min(config.width, 10));
+    const baseValues = roots.map((c) => c.value);
+    const timeout = Symbol("budget");
+    const search = (
+      position: Position,
+      depth: number,
+      alpha: number,
+      beta: number,
+    ): number => {
+      if (performance.now() > deadline) throw timeout;
+      if (!depth) return estimate(position, position.toPlay);
+      const choices = legalActions(position)
+        .map((a) => immediate(position, a)!)
         .sort((a, b) => b.value - a.value)
-        .slice(0, difficulty === "advanced" ? 4 : 2);
-      let worst = Infinity;
-      for (const reply of replies) {
-        const r = play(moved.position, reply.action);
-        if (!r.ok) continue;
-        let evaluation = estimate(r.position, p.toPlay);
-        if (config.depth === 3 && performance.now() < deadline) {
-          const responses = legalActions(r.position)
-            .map((a) => immediate(r.position, a)!)
-            .sort((a, b) => b.value - a.value)
-            .slice(0, 2);
-          evaluation = Math.max(
-            evaluation,
-            ...responses.map((c) => {
-              const s = play(r.position, c.action);
-              return s.ok ? estimate(s.position, p.toPlay) : -Infinity;
-            }),
-          );
-        }
-        worst = Math.min(worst, evaluation);
+        .slice(0, depth > 1 ? 5 : 4);
+      if (!choices.length) return estimate(position, position.toPlay);
+      let best = -Infinity;
+      for (const choice of choices) {
+        const moved = play(position, choice.action);
+        if (!moved.ok) continue;
+        const v = -search(moved.position, depth - 1, -beta, -alpha);
+        best = Math.max(best, v);
+        alpha = Math.max(alpha, v);
+        if (alpha >= beta) break;
       }
-      if (Number.isFinite(worst)) candidate.value += worst * 0.6;
+      return best;
+    };
+    for (let depth = 2; depth <= config.depth; depth++) {
+      try {
+        const scores = roots.map((candidate, i) => {
+          const moved = play(p, candidate.action);
+          return moved.ok
+            ? baseValues[i] * 0.45 +
+                (-search(moved.position, depth - 1, -Infinity, Infinity) -
+                  baseline)
+            : -Infinity;
+        });
+        // Apply only a fully completed depth: elapsed time never favors the first root.
+        scores.forEach((value, i) => {
+          roots[i].value = value;
+        });
+      } catch (error) {
+        if (error !== timeout) throw error;
+        break;
+      }
     }
+    // Roots outside the beam have no comparable searched score.
+    candidates.splice(0, candidates.length, ...roots);
     candidates.sort((a, b) => b.value - a.value);
+  }
+  if (difficulty !== "guided" && p.size <= 13 && candidates.length > 1) {
+    const roots = candidates.slice(0, 6),
+      prior = roots.map((c) => c.value),
+      sums = roots.map(() => 0);
+    const deadline =
+      performance.now() +
+      (difficulty === "advanced"
+        ? 900
+        : difficulty === "challenge"
+          ? 500
+          : 250);
+    let samples = 0;
+    let seed = p.moveNumber + 17;
+    p.board.forEach((c, i) => {
+      seed = (Math.imul(seed, 31) + c * (i + 1)) >>> 0;
+    });
+    for (let batch = 0; batch < 40; batch++) {
+      try {
+        const values = roots.map((c) => {
+          const moved = play(p, c.action);
+          return moved.ok
+            ? rollout(
+                moved.position,
+                p.toPlay,
+                seededRandom(seed + batch * 7919),
+                deadline,
+              )
+            : -1;
+        });
+        values.forEach((v, i) => (sums[i] += v));
+        samples++;
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "rollout-budget")
+          throw error;
+        break;
+      }
+    }
+    if (samples >= 2) {
+      roots.forEach((c, i) => {
+        c.value = prior[i] * 0.25 + (sums[i] / samples) * 14;
+      });
+      candidates.splice(
+        0,
+        candidates.length,
+        ...roots.sort((a, b) => b.value - a.value),
+      );
+    }
   }
   const ownDanger = groups(p.board, p.size).some(
     (g) => g.color === p.toPlay && g.liberties.size === 1,

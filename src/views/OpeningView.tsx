@@ -15,6 +15,7 @@ import type { Opening } from "../content/openings";
 import { coord, fromCoord } from "../domain/go";
 import type { Point } from "../domain/go";
 import type { Preferences } from "../storage";
+import { CoachButton } from "../components/Coach";
 export function OpeningsPage({
   navigate,
   learned,
@@ -117,6 +118,9 @@ export function OpeningView({
   };
   return (
     <div className="page-enter">
+      <CoachButton
+        question={`请结合${opening.name}的棋谱注解，解释当前这一步和后续方向。`}
+      />
       <button className="back-link" onClick={() => navigate("openings")}>
         <ArrowLeft size={18} /> 返回经典开局
       </button>

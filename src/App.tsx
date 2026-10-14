@@ -54,12 +54,19 @@ import {
   saveGame,
   loadPreferences,
   setRecord,
+  restoreRecords,
 } from "./storage";
 import type { Preferences, Progress } from "./storage";
 import { LessonView } from "./views/LessonView";
 import { OpeningsPage, OpeningView } from "./views/OpeningView";
 import { PlayView } from "./views/PlayView";
 import { OfflineUpdate } from "./components/OfflineUpdate";
+import { CoachProvider } from "./components/Coach";
+import { ArchivePanel } from "./components/ArchivePanel";
+import { AppearanceContext } from "./components/Appearance";
+import { ChallengeHub, ChallengeView } from "./views/ChallengeView";
+import { StudyLibrary, StudyView } from "./views/StudyView";
+import { studies } from "./content/studies";
 
 const navigation = [
   { route: "learn", label: "学习路线", icon: BookOpen },
@@ -354,6 +361,7 @@ export default function App() {
     [human, setHuman] = useState<1 | 2>(1),
     [readOnlyGame, setReadOnlyGame] = useState(false);
   const [mode, setMode] = useState<"training" | "challenge">("training");
+  const [challengeAssisted, setChallengeAssisted] = useState(false);
   const [leasedGame, setLeasedGame] = useState<string | null>(null);
   const channel = useRef<BroadcastChannel | null>(null),
     tabId = useRef(crypto.randomUUID()),
@@ -371,6 +379,7 @@ export default function App() {
       setPracticeStage(null);
       setExamResult(null);
       setReviewQuestions(null);
+      setChallengeAssisted(false);
     };
     addEventListener("hashchange", change);
     return () => removeEventListener("hashchange", change);
@@ -589,15 +598,19 @@ export default function App() {
   );
   const activeRoute = route.startsWith("lesson/")
     ? "learn"
-    : route.startsWith("opening/")
-      ? "openings"
-      : route.startsWith("game/") || route.startsWith("review/")
-        ? "play"
-        : route === "records"
-          ? "settings"
-          : route === "placement"
-            ? "practice"
-            : route;
+    : route.startsWith("challenge/")
+      ? "practice"
+      : route.startsWith("study/")
+        ? "openings"
+        : route.startsWith("opening/")
+          ? "openings"
+          : route.startsWith("game/") || route.startsWith("review/")
+            ? "play"
+            : route === "records"
+              ? "settings"
+              : route === "placement"
+                ? "practice"
+                : route;
   const pageTitle =
     [...navigation, { route: "settings", label: "我的空间" }].find(
       (n) => n.route === activeRoute,
@@ -605,6 +618,10 @@ export default function App() {
   const currentGame = games.find((g) => g.id === currentGameId);
   const lesson = lessons.find((l) => l.id === route.split("/")[1]);
   const opening = openings.find((o) => o.id === route.split("/")[1]);
+  const study = studies.find((s) => s.id === route.split("/")[1]);
+  const importedStudy = route.startsWith("study/")
+    ? games.find((g) => g.id === route.split("/")[1])
+    : undefined;
   const togglePreference = <K extends keyof Preferences>(
     key: K,
     value: Preferences[K],
@@ -668,8 +685,58 @@ export default function App() {
         initialReview={route.startsWith("review/")}
       />
     );
+  else if (route.startsWith("study/") && (study || importedStudy))
+    content = (
+      <StudyView
+        key={route}
+        study={study}
+        game={importedStudy}
+        preferences={preferences}
+        navigate={navigate}
+        save={updateGame}
+      />
+    );
   else if (route === "openings")
-    content = <OpeningsPage navigate={navigate} learned={progress.openings} />;
+    content = (
+      <>
+        <OpeningsPage navigate={navigate} learned={progress.openings} />
+        <StudyLibrary
+          navigate={navigate}
+          games={games}
+          importGames={async (incoming) => {
+            const combined = [...incoming, ...games];
+            await restoreRecords(progress, combined);
+            setGames(combined);
+          }}
+        />
+      </>
+    );
+  else if (route.startsWith("challenge/"))
+    content = (
+      <ChallengeView
+        key={route}
+        id={route.split("/")[1]}
+        preferences={preferences}
+        navigate={navigate}
+        assisted={challengeAssisted}
+        restart={() => setChallengeAssisted(false)}
+        complete={(id, score, ranked) =>
+          setProgress((p) => ({
+            ...p,
+            challenges: {
+              ...p.challenges,
+              [id]: {
+                best: ranked
+                  ? Math.max(p.challenges?.[id]?.best || 0, score)
+                  : p.challenges?.[id]?.best || 0,
+                attempts: (p.challenges?.[id]?.attempts || 0) + 1,
+                at: Date.now(),
+              },
+            },
+          }))
+        }
+      />
+    );
   else if (route === "practice" || route === "placement") {
     const placement = route === "placement";
     const selectedQuestions = placement
@@ -781,6 +848,7 @@ export default function App() {
           </div>
         ) : (
           <>
+            <ChallengeHub navigate={navigate} progress={progress} />
             <div className="practice-feature">
               <div className="icon-square">
                 <Lightbulb size={29} />
@@ -1072,8 +1140,53 @@ export default function App() {
         <div className="settings-layout">
           <AISettings profile={profile} save={setProfile} notify={notify} />
           <div className="settings-side">
+            <ArchivePanel
+              progress={progress}
+              preferences={preferences}
+              profile={profile}
+              games={games}
+              loaded={(p, prefs, ai, g) => {
+                setProgress(p);
+                setPreferences(prefs);
+                setProfile(ai);
+                setGames(g);
+                notify("完整存档已恢复。");
+              }}
+            />
             <section className="settings-card">
               <h2>棋盘与界面</h2>
+              <label className="field">
+                对弈场景
+                <select
+                  value={preferences.scene}
+                  onChange={(e) =>
+                    togglePreference(
+                      "scene",
+                      e.target.value as Preferences["scene"],
+                    )
+                  }
+                >
+                  <option value="bamboo">竹林 · 晨光</option>
+                  <option value="room">棋室 · 木与纸</option>
+                  <option value="night">夜庭 · 灯火</option>
+                </select>
+              </label>
+              <label className="field">
+                棋盘材质
+                <select
+                  value={preferences.boardMaterial}
+                  onChange={(e) =>
+                    togglePreference(
+                      "boardMaterial",
+                      e.target.value as Preferences["boardMaterial"],
+                    )
+                  }
+                >
+                  <option value="kaya">榧木 · 蜜金色</option>
+                  <option value="walnut">胡桃木 · 深棕色</option>
+                  <option value="slate">岩石 · 银灰色</option>
+                </select>
+              </label>
               <label className="toggle-row">
                 <span>深色主题</span>
                 <input
@@ -1482,187 +1595,251 @@ export default function App() {
       </div>
     );
   return (
-    <div className="app-shell">
-      <OfflineUpdate
-        busy={
-          route.startsWith("lesson/") || !!(currentGame && !currentGame.result)
+    <AppearanceContext.Provider
+      value={{
+        change: (key, value) => setPreferences((p) => ({ ...p, [key]: value })),
+      }}
+    >
+      <CoachProvider
+        profile={profile}
+        route={route}
+        title={
+          route.startsWith("lesson/") && lesson
+            ? lesson.title
+            : route.startsWith("opening/") && opening
+              ? opening.name
+              : route.startsWith("study/")
+                ? study?.title || importedStudy?.title || pageTitle
+                : route.startsWith("challenge/")
+                  ? "挑战练习"
+                  : currentGame
+                    ? currentGame.title
+                    : pageTitle
         }
-      />
-      <aside className="sidebar">
-        <button
-          className="brand"
-          onClick={() => navigate("learn")}
-          aria-label="弈间首页"
-        >
-          <span className="brand-mark">
-            <i />
-            <i />
-          </span>
-          <span>
-            弈间<small>GO STUDIO</small>
-          </span>
-        </button>
-        <div className="sidebar-label">你的围棋学习空间</div>
-        <nav aria-label="主导航">
-          {navigation.map((item) => (
+        reference={
+          route.startsWith("lesson/") && lesson
+            ? [
+                lesson.summary,
+                ...lesson.paragraphs,
+                ...(lesson.variants?.map(
+                  (v) => `${v.label}：${v.explanation}`,
+                ) || []),
+              ].join("\n")
+            : route.startsWith("opening/") && opening
+              ? [opening.lesson, opening.caution, ...opening.notes].join("\n")
+              : route.startsWith("study/") && study
+                ? [
+                    study.description,
+                    ...study.questions,
+                    ...Object.values(study.game.nodes).map(
+                      (n) => n.explanation || "",
+                    ),
+                  ].join("\n")
+                : `已完成 ${completed} 节课程。可讨论围棋规则、学习路线、布局方向、战术和复盘。${currentGame?.nodes[currentGame.current].explanation || ""}`
+        }
+        navigate={navigate}
+        blocked={
+          route === "placement" ||
+          (route === "practice" && practiceStage !== null && !examResult)
+        }
+        onAssist={() => {
+          if (route.startsWith("challenge/")) setChallengeAssisted(true);
+          if (
+            currentGame &&
+            !readOnlyGame &&
+            leasedGame === currentGame.id &&
+            !currentGame.assisted
+          )
+            updateGame({ ...currentGame, assisted: true });
+        }}
+      >
+        <div className="app-shell">
+          <OfflineUpdate
+            busy={
+              route.startsWith("lesson/") ||
+              !!(currentGame && !currentGame.result)
+            }
+          />
+          <aside className="sidebar">
             <button
-              key={item.route}
-              className={activeRoute === item.route ? "active" : ""}
-              onClick={() => navigate(item.route)}
+              className="brand"
+              onClick={() => navigate("learn")}
+              aria-label="弈间首页"
             >
-              <item.icon
-                size={22}
-                weight={activeRoute === item.route ? "fill" : "regular"}
-              />
-              {item.label}
-              {activeRoute === item.route && <span className="nav-dot" />}
+              <span className="brand-mark">
+                <i />
+                <i />
+              </span>
+              <span>
+                弈间<small>GO STUDIO</small>
+              </span>
             </button>
-          ))}
-        </nav>
-        <div className="sidebar-bottom">
-          <div className="sidebar-tip">
-            <Sparkle size={24} />
-            <p>
-              围棋的乐趣，
-              <br />
-              藏在每一次思考里。
-            </p>
-            <span>慢慢来，下一手会更好。</span>
-          </div>
-          <button
-            className={activeRoute === "settings" ? "active" : ""}
-            onClick={() => navigate("settings")}
-          >
-            <GearSix size={22} />
-            我的空间
-          </button>
-          <div className="sidebar-footer">
-            <span className="avatar">弈</span>
-            <div>
-              <strong>个人学习者</strong>
-              <small>本地模式 · 无需登录</small>
+            <div className="sidebar-label">你的围棋学习空间</div>
+            <nav aria-label="主导航">
+              {navigation.map((item) => (
+                <button
+                  key={item.route}
+                  className={activeRoute === item.route ? "active" : ""}
+                  onClick={() => navigate(item.route)}
+                >
+                  <item.icon
+                    size={22}
+                    weight={activeRoute === item.route ? "fill" : "regular"}
+                  />
+                  {item.label}
+                  {activeRoute === item.route && <span className="nav-dot" />}
+                </button>
+              ))}
+            </nav>
+            <div className="sidebar-bottom">
+              <div className="sidebar-tip">
+                <Sparkle size={24} />
+                <p>
+                  围棋的乐趣，
+                  <br />
+                  藏在每一次思考里。
+                </p>
+                <span>慢慢来，下一手会更好。</span>
+              </div>
+              <button
+                className={activeRoute === "settings" ? "active" : ""}
+                onClick={() => navigate("settings")}
+              >
+                <GearSix size={22} />
+                我的空间
+              </button>
+              <div className="sidebar-footer">
+                <span className="avatar">弈</span>
+                <div>
+                  <strong>个人学习者</strong>
+                  <small>本地模式 · 无需登录</small>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      </aside>
-      <div className="app-main">
-        <header className="topbar">
-          <div className="breadcrumb">
-            <span>弈间</span>
-            <span>/</span>
-            <strong>{pageTitle}</strong>
-          </div>
-          <div className="topbar-actions">
-            <span className="local-status">
-              <ShieldCheck size={16} />
-              本地保存
-            </span>
-            <button
-              className="icon-button"
-              aria-label="切换主题"
-              onClick={() =>
-                togglePreference(
-                  "theme",
-                  preferences.theme === "dark" ? "light" : "dark",
-                )
-              }
-            >
-              {preferences.theme === "dark" ? (
-                <Sun size={20} />
+          </aside>
+          <div className="app-main">
+            <header className="topbar">
+              <div className="breadcrumb">
+                <span>弈间</span>
+                <span>/</span>
+                <strong>{pageTitle}</strong>
+              </div>
+              <div className="topbar-actions">
+                <span className="local-status">
+                  <ShieldCheck size={16} />
+                  本地保存
+                </span>
+                <button
+                  className="icon-button"
+                  aria-label="切换主题"
+                  onClick={() =>
+                    togglePreference(
+                      "theme",
+                      preferences.theme === "dark" ? "light" : "dark",
+                    )
+                  }
+                >
+                  {preferences.theme === "dark" ? (
+                    <Sun size={20} />
+                  ) : (
+                    <Moon size={20} />
+                  )}
+                </button>
+                <button
+                  className="user-level"
+                  onClick={() => navigate("settings")}
+                >
+                  <GraduationCap size={18} />
+                  {completed >= 24 ? "进阶学习中" : "围棋初学者"}
+                </button>
+              </div>
+            </header>
+            <main>
+              {!ready ? (
+                <div className="loading">
+                  <SpinnerGap className="spin" size={30} />
+                  正在读取本机记录…
+                </div>
               ) : (
-                <Moon size={20} />
+                content
               )}
-            </button>
-            <button className="user-level" onClick={() => navigate("settings")}>
-              <GraduationCap size={18} />
-              {completed >= 24 ? "进阶学习中" : "围棋初学者"}
-            </button>
+            </main>
+            <footer className="main-footer">
+              <span>弈间 · 一次一手，慢慢学会。</span>
+              <span>
+                <LockKey size={13} />
+                学习记录留在你的浏览器
+              </span>
+            </footer>
           </div>
-        </header>
-        <main>
-          {!ready ? (
-            <div className="loading">
-              <SpinnerGap className="spin" size={30} />
-              正在读取本机记录…
+          <nav className="mobile-nav" aria-label="移动端导航">
+            {[
+              ...navigation,
+              { route: "settings", label: "我的", icon: GearSix },
+            ].map((item) => (
+              <button
+                key={item.route}
+                className={activeRoute === item.route ? "active" : ""}
+                onClick={() => navigate(item.route)}
+              >
+                <item.icon
+                  size={22}
+                  weight={activeRoute === item.route ? "fill" : "regular"}
+                />
+                <span>
+                  {item.label
+                    .replace("与挑战", "")
+                    .replace("路线", "")
+                    .replace("开始", "")}
+                </span>
+              </button>
+            ))}
+          </nav>
+          {toast && (
+            <div className="toast" role="status">
+              <CheckCircle size={20} />
+              {toast}
+              <button aria-label="关闭通知" onClick={() => setToast("")}>
+                ×
+              </button>
             </div>
-          ) : (
-            content
           )}
-        </main>
-        <footer className="main-footer">
-          <span>弈间 · 一次一手，慢慢学会。</span>
-          <span>
-            <LockKey size={13} />
-            学习记录留在你的浏览器
-          </span>
-        </footer>
-      </div>
-      <nav className="mobile-nav" aria-label="移动端导航">
-        {[
-          ...navigation,
-          { route: "settings", label: "我的", icon: GearSix },
-        ].map((item) => (
-          <button
-            key={item.route}
-            className={activeRoute === item.route ? "active" : ""}
-            onClick={() => navigate(item.route)}
-          >
-            <item.icon
-              size={22}
-              weight={activeRoute === item.route ? "fill" : "regular"}
-            />
-            <span>
-              {item.label
-                .replace("与挑战", "")
-                .replace("路线", "")
-                .replace("开始", "")}
-            </span>
-          </button>
-        ))}
-      </nav>
-      {toast && (
-        <div className="toast" role="status">
-          <CheckCircle size={20} />
-          {toast}
-          <button aria-label="关闭通知" onClick={() => setToast("")}>
-            ×
-          </button>
-        </div>
-      )}
-      {clearData && (
-        <div className="modal-scrim">
-          <div className="modal" role="dialog" aria-modal="true">
-            <h2>清除本机学习记录？</h2>
-            <p>
-              这会删除学习进度、错题和全部棋谱。AI
-              配置保留，请先导出需要的记录。
-            </p>
-            <div className="button-row">
-              <button
-                className="button secondary"
-                onClick={() => setClearData(false)}
-              >
-                取消
-              </button>
-              <button
-                className="button primary"
-                onClick={() => {
-                  void clearRecords()
-                    .then(() => {
-                      setProgress(emptyProgress());
-                      setGames([]);
-                      setClearData(false);
-                      notify("学习记录已清除，AI 配置保留。");
-                    })
-                    .catch(() => notify("清除失败，请检查浏览器存储。"));
-                }}
-              >
-                确认清除
-              </button>
+          {clearData && (
+            <div className="modal-scrim">
+              <div className="modal" role="dialog" aria-modal="true">
+                <h2>清除本机学习记录？</h2>
+                <p>
+                  这会删除学习进度、错题和全部棋谱。AI
+                  配置保留，请先导出需要的记录。
+                </p>
+                <div className="button-row">
+                  <button
+                    className="button secondary"
+                    onClick={() => setClearData(false)}
+                  >
+                    取消
+                  </button>
+                  <button
+                    className="button primary"
+                    onClick={() => {
+                      void clearRecords()
+                        .then(() => {
+                          setProgress(emptyProgress());
+                          setGames([]);
+                          setClearData(false);
+                          notify("学习记录已清除，AI 配置保留。");
+                        })
+                        .catch(() => notify("清除失败，请检查浏览器存储。"));
+                    }}
+                  >
+                    确认清除
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
         </div>
-      )}
-    </div>
+      </CoachProvider>
+    </AppearanceContext.Provider>
   );
 }

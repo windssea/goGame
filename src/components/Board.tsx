@@ -11,9 +11,12 @@ import {
   MagnifyingGlassPlus,
   Stack,
 } from "@phosphor-icons/react";
-import { coord, groupAt, index, point } from "../domain/go";
+import { coord, groupAt, index, point, stoneMoveNumbers } from "../domain/go";
 import type { Color, Point, Position } from "../domain/go";
 import type { Preferences } from "../storage";
+import { useCoachBoard } from "./Coach";
+import { buildScenery } from "./scenery";
+import { useAppearance } from "./Appearance";
 
 type Props = {
   position: Position;
@@ -27,6 +30,7 @@ type Props = {
   ownership?: number[];
   numbers?: boolean;
   compact?: boolean;
+  coachNote?: string;
 };
 type SceneAPI = {
   update: (props: Props) => void;
@@ -35,19 +39,36 @@ type SceneAPI = {
   zoom: (amount: number) => void;
   dispose: () => void;
 };
-function woodTexture() {
+function woodTexture(material: Preferences["boardMaterial"]) {
   const canvas = document.createElement("canvas");
   canvas.width = 1024;
   canvas.height = 1024;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#d9b983";
+  ctx.fillStyle =
+    material === "walnut"
+      ? "#937356"
+      : material === "slate"
+        ? "#acb5b4"
+        : "#d9b983";
   ctx.fillRect(0, 0, 1024, 1024);
   let seed = 9321;
   const random = () => {
     seed = (seed * 16807) % 2147483647;
     return seed / 2147483647;
   };
-  for (let x = 0; x < 1024; x += 2) {
+  if (material === "slate") {
+    for (let i = 0; i < 16000; i++) {
+      const shade = Math.floor(130 + random() * 75);
+      ctx.fillStyle = `rgba(${shade},${shade + 4},${shade + 4},0.14)`;
+      ctx.fillRect(
+        random() * 1024,
+        random() * 1024,
+        1 + random() * 4,
+        1 + random() * 3,
+      );
+    }
+  }
+  for (let x = 0; material !== "slate" && x < 1024; x += 2) {
     const shade = random();
     ctx.strokeStyle = `rgba(${shade > 0.7 ? "248,224,176" : "122,83,39"},${0.025 + random() * 0.06})`;
     ctx.lineWidth = 1 + random();
@@ -112,9 +133,17 @@ function buildScene(
   controls.maxDistance = 22;
   controls.rotateSpeed = 0.35;
   controls.enableZoom = true;
-  const ambient = new THREE.HemisphereLight("#ffffff", "#76634f", 2.5);
+  const scenery = buildScenery(scene, initial.preferences.scene);
+  const ambient = new THREE.HemisphereLight(
+    initial.preferences.scene === "night" ? "#bacfdc" : "#ffffff",
+    "#76634f",
+    initial.preferences.scene === "night" ? 1.7 : 2.5,
+  );
   scene.add(ambient);
-  const light = new THREE.DirectionalLight("#fff5e5", 4);
+  const light = new THREE.DirectionalLight(
+    initial.preferences.scene === "night" ? "#ccdfec" : "#fff5e5",
+    initial.preferences.scene === "night" ? 2.3 : 4,
+  );
   light.position.set(-6, 12, 5);
   light.castShadow = true;
   light.shadow.mapSize.set(1024, 1024);
@@ -136,13 +165,14 @@ function buildScene(
   shadow.position.y = -0.58;
   shadow.receiveShadow = true;
   scene.add(shadow);
-  const wood = woodTexture();
+  const wood = woodTexture(initial.preferences.boardMaterial);
   const board = new THREE.Mesh(
     new RoundedBoxGeometry(9.3, 0.5, 9.3, 4, 0.09),
     new THREE.MeshStandardMaterial({
       map: wood,
-      roughness: 0.72,
-      color: "#f7e0b3",
+      roughness: initial.preferences.boardMaterial === "slate" ? 0.54 : 0.72,
+      color:
+        initial.preferences.boardMaterial === "kaya" ? "#f7e0b3" : "#ffffff",
     }),
   );
   board.position.y = -0.25;
@@ -228,7 +258,12 @@ function buildScene(
         new THREE.Float32BufferAttribute(vertices, 3),
       ),
       new THREE.LineBasicMaterial({
-        color: "#72552f",
+        color:
+          initial.preferences.boardMaterial === "slate"
+            ? "#364e52"
+            : initial.preferences.boardMaterial === "walnut"
+              ? "#453023"
+              : "#72552f",
         transparent: true,
         opacity: 0.68,
       }),
@@ -273,6 +308,7 @@ function buildScene(
     overlays.add(mesh);
   }
   function update(props: Props) {
+    const moveNumbers = props.numbers ? stoneMoveNumbers(props.position) : {};
     currentProps = props;
     if (props.preferences.reducedMotion) {
       animated.clear();
@@ -333,11 +369,11 @@ function buildScene(
         ring(p, "#bf6b56", step * 0.2, step * 0.55);
       }
       stones.add(mesh);
-      if (props.numbers) {
+      if (props.numbers && moveNumbers[i]) {
         const label = new THREE.Sprite(
           new THREE.SpriteMaterial({
             map: labelTexture(
-              String(i + 1),
+              String(moveNumbers[i]),
               color === 1 ? "#ffffff" : "#153e35",
               76,
             ),
@@ -497,6 +533,11 @@ function buildScene(
     if (disposed) return;
     frame = requestAnimationFrame(animate);
     controls.update();
+    if (
+      !currentProps.preferences.reducedMotion &&
+      currentProps.preferences.quality === "high"
+    )
+      scenery.animate(time);
     const active = animated.size > 0 || removed.size > 0;
     if (active)
       stones.children.forEach((child) => {
@@ -519,7 +560,11 @@ function buildScene(
     });
     if (
       isVisible &&
-      (dirty || active) &&
+      (dirty ||
+        active ||
+        (!currentProps.preferences.reducedMotion &&
+          currentProps.preferences.quality === "high" &&
+          currentProps.preferences.scene === "bamboo")) &&
       time - lastTime > (currentProps.preferences.quality === "low" ? 30 : 12)
     ) {
       renderer.render(scene, camera);
@@ -571,6 +616,7 @@ function buildScene(
         mesh.material.dispose();
       });
       removed.clear();
+      scenery.dispose();
       stoneGeometry.dispose();
       blackMaterial.dispose();
       whiteMaterial.dispose();
@@ -641,6 +687,8 @@ export function MiniBoard({
   );
 }
 export function Board(props: Props) {
+  useCoachBoard(props.position, props.coachNote);
+  const { change } = useAppearance();
   const container = useRef<HTMLDivElement>(null),
     api = useRef<SceneAPI | null>(null),
     propsRef = useRef(props);
@@ -675,7 +723,13 @@ export function Board(props: Props) {
       api.current = null;
       element.removeEventListener("board-failed", onFailure);
     };
-  }, [mode2d, props.position.size, props.preferences.quality]);
+  }, [
+    mode2d,
+    props.position.size,
+    props.preferences.quality,
+    props.preferences.scene,
+    props.preferences.boardMaterial,
+  ]);
   useEffect(() => {
     api.current?.update({
       ...props,
@@ -688,6 +742,8 @@ export function Board(props: Props) {
     props.onSelect?.(p);
   };
   const selected = keyboard ? cursor : props.selected || cursor;
+  const flatMoveNumbers =
+    mode2d && props.numbers ? stoneMoveNumbers(props.position) : {};
   const handleKey = (e: KeyEvent) => {
     const p = { ...selected };
     if (e.key === "ArrowUp") p.row = Math.max(0, p.row - 1);
@@ -720,7 +776,9 @@ export function Board(props: Props) {
       ],
   );
   return (
-    <div className={`board-shell ${props.compact ? "compact" : ""}`}>
+    <div
+      className={`board-shell scene-${props.preferences.scene} material-${props.preferences.boardMaterial} ${props.compact ? "compact" : ""}`}
+    >
       <div className="board-status">
         <span>
           <i className="live-dot" /> {mode2d ? "清晰 2D 棋盘" : "交互 3D 棋盘"}
@@ -756,7 +814,9 @@ export function Board(props: Props) {
                   className={`intersection ${color ? `stone-${color}` : ""} ${isSelected ? "selected" : ""} ${props.dead?.includes(i) ? "dead" : ""} ${props.hint && index(props.hint, props.position.size) === i ? "hint" : ""}`}
                   onClick={() => choose(p)}
                 >
-                  <span />
+                  <span>
+                    {color && flatMoveNumbers[i] ? flatMoveNumbers[i] : ""}
+                  </span>
                 </button>
               );
             })}
@@ -812,6 +872,28 @@ export function Board(props: Props) {
       )}
       <div className="board-toolbar">
         <span>{mode2d ? "点击交叉点选子" : "拖动旋转 · 滚轮缩放"}</span>
+        {!props.compact && (
+          <div className="board-appearance">
+            <select
+              aria-label="快速切换场景"
+              value={props.preferences.scene}
+              onChange={(e) => change("scene", e.target.value)}
+            >
+              <option value="bamboo">竹林</option>
+              <option value="room">棋室</option>
+              <option value="night">夜庭</option>
+            </select>
+            <select
+              aria-label="快速切换棋盘材质"
+              value={props.preferences.boardMaterial}
+              onChange={(e) => change("boardMaterial", e.target.value)}
+            >
+              <option value="kaya">榧木</option>
+              <option value="walnut">胡桃木</option>
+              <option value="slate">岩石</option>
+            </select>
+          </div>
+        )}
         <div>
           {!mode2d && (
             <>
